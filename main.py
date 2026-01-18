@@ -335,6 +335,30 @@ async def cmd_start(message: Message, bot: Bot, db: Database) -> None:
 @dp.callback_query(F.data.startswith("vote_one:"))
 async def on_vote_one(callback: CallbackQuery, db: Database) -> None:
     assert callback.message is not None
+
+    try:
+        option_id = int(callback.data.split(":")[1])
+    except Exception:
+        await callback.answer("Ошибка данных.", show_alert=True)
+        return
+
+    options_by_id = await db.get_options_map()
+    title = options_by_id[option_id]["title"]
+
+    text = f"Вы выбрали <b>«{title}»</b>.\nПодтверждаете выбор?"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Да", callback_data=f"confirm_vote_one:{option_id}"),
+            InlineKeyboardButton(text="🔙 Нет", callback_data="cancel_vote_one")
+        ]
+    ])
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("confirm_vote_one:"))
+async def on_confirm_vote_one(callback: CallbackQuery, db: Database) -> None:
+    assert callback.message is not None
     user_id = callback.from_user.id
 
     try:
@@ -359,13 +383,29 @@ async def on_vote_one(callback: CallbackQuery, db: Database) -> None:
         "Хотите составить подробный рейтинг остальных вариантов?\n"
         "Это поможет нам лучше учесть ваши предпочтения в случае, если выбранный вами вариант не победит."
     )
-    
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Составить рейтинг", callback_data="start_ranking")]
     ])
 
     await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
     await callback.answer("Голос принят!")
+
+
+@dp.callback_query(F.data == "cancel_vote_one")
+async def on_cancel_vote_one(callback: CallbackQuery, db: Database) -> None:
+    assert callback.message is not None
+
+    options = await db.get_options()
+    options_by_id = {int(r["id"]): r for r in options}
+
+    text = (
+        "<b>Выберите один лучший вариант</b>\n\n"
+        "Пожалуйста, нажмите на кнопку с названием варианта, который вам нравится больше всего."
+    )
+    kb = build_single_choice_keyboard(options_by_id)
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    await callback.answer()
 
 
 @dp.callback_query(F.data == "start_ranking")
@@ -466,6 +506,36 @@ async def on_submit(callback: CallbackQuery, db: Database) -> None:
         await callback.answer("Сначала выберите хотя бы один вариант.", show_alert=True)
         return
 
+    options_by_id = await db.get_options_map()
+    human = [options_by_id[i]["title"] for i in selected]
+
+    text = (
+        "<b>Ваш рейтинг:</b>\n"
+        + "\n".join([f"{i+1}. {t}" for i, t in enumerate(human)])
+        + "\n\nПодтверждаете отправку?"
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Да", callback_data="confirm_submit"),
+            InlineKeyboardButton(text="🔙 Нет", callback_data="cancel_submit")
+        ]
+    ])
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "confirm_submit")
+async def on_confirm_submit(callback: CallbackQuery, db: Database) -> None:
+    assert callback.message is not None
+    user_id = callback.from_user.id
+
+    session = await db.get_session(user_id)
+    if session is None:
+        await callback.answer("Сессия не найдена. Нажмите /start заново.", show_alert=True)
+        return
+
+    selected, unselected = session
     # В IRV обычно важен порядок предпочтений.
     # Здесь ranking = выбранные (в порядке ранга 1..N). Невыбранные не попадают в бюллетень (будут “exhausted”).
     ranking = selected[:]
@@ -487,6 +557,26 @@ async def on_submit(callback: CallbackQuery, db: Database) -> None:
     )
     await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=None)
     await callback.answer("Сохранено ✅")
+
+
+@dp.callback_query(F.data == "cancel_submit")
+async def on_cancel_submit(callback: CallbackQuery, db: Database) -> None:
+    assert callback.message is not None
+    user_id = callback.from_user.id
+
+    session = await db.get_session(user_id)
+    if session is None:
+        await callback.answer("Сессия не найдена. Нажмите /start заново.", show_alert=True)
+        return
+
+    selected, unselected = session
+    options_by_id = await db.get_options_map()
+
+    text = build_poll_text(options_by_id, selected)
+    kb = build_keyboard(options_by_id, selected, unselected)
+
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    await callback.answer()
 
 # =========================
 # Entrypoint
