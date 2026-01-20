@@ -1,4 +1,5 @@
 import asyncio
+import io
 import json
 import logging
 import os
@@ -19,8 +20,14 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     Message,
 )
+from aiogram.types.input_file import BufferedInputFile
 from aiogram.exceptions import TelegramBadRequest
 
+import matplotlib
+matplotlib.use("Agg")  # важно для серверов без дисплея
+from matplotlib import pyplot as plt
+
+from graph import plot_irv_pairwise_matrix
 
 # =========================
 # Конфиг вариантов (15 шт.)
@@ -54,6 +61,7 @@ DEFAULT_OPTIONS: List[OptionSeed] = [
     OptionSeed(15, "Скетч 15", "by @yoyomif & @neuroblin", "assets/15.png"),
 ]
 
+ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(",")))
 
 # =========================
 # SQLite слой
@@ -577,6 +585,39 @@ async def on_cancel_submit(callback: CallbackQuery, db: Database) -> None:
 
     await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
     await callback.answer()
+
+@dp.message(Command("graph"))
+async def cmd_graph(message: Message, db: Database) -> None:
+    user_id = message.from_user.id
+    if user_id not in ADMIN_IDS:
+        await message.answer("Ты не админ.")
+        return
+
+    ballots = await db.get_all_ballots()
+    if not ballots:
+        await message.answer("Пока нет ни одного голоса.")
+        return
+
+    options_by_id = await db.get_options_map()
+    candidate_ids = sorted(options_by_id.keys())
+
+    # строим график (твоя функция из прошлых сообщений)
+    fig, ax = plot_irv_pairwise_matrix(
+        ballots,
+        candidate_ids=candidate_ids,
+        labels=None,
+        figsize=(13, 11),
+    )
+
+    # сохраняем в память
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=200, bbox_inches="tight")
+    plt.close(fig)  # важно, чтобы не текла память
+    buf.seek(0)
+
+    photo = BufferedInputFile(buf.getvalue(), filename="irv_matrix.png")
+    await message.answer_photo(photo=photo, caption=f"График по {len(ballots)} рейтингам")
+
 
 # =========================
 # Entrypoint

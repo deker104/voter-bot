@@ -12,4 +12,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "ipython>=9.9.0",
+    "jupyter>=1.1.1",
+    "matplotlib>=3.10.8",
+    "numpy>=2.4.1",
 ]
